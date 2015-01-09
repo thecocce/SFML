@@ -97,13 +97,6 @@ void Window::create(VideoMode mode, const String& title, Uint32 style, const Con
         }
         else
         {
-            // Make sure that the chosen video mode is compatible
-            if (!mode.isValid())
-            {
-                err() << "The requested video mode is not available, switching to a valid mode" << std::endl;
-                mode = VideoMode::getFullscreenModes()[0];
-            }
-
             // Update the fullscreen window
             fullscreenWindow = this;
         }

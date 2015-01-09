@@ -177,12 +177,8 @@ m_useSizeHints(false)
     int width  = mode.width;
     int height = mode.height;
 
-    // Switch to fullscreen if necessary
-    if (fullscreen)
-        switchToFullscreen(mode);
-
     // Define the window attributes
-    const uint32_t value_list[] = {fullscreen, static_cast<uint32_t>(eventMask)};
+    const uint32_t value_list[] = {static_cast<uint32_t>(eventMask)};
 
     // Create the window
     m_window = xcb_generate_id(m_connection);
@@ -197,7 +193,7 @@ m_useSizeHints(false)
                 0,
                 XCB_WINDOW_CLASS_INPUT_OUTPUT,
                 XCB_COPY_FROM_PARENT,
-                XCB_CW_EVENT_MASK | XCB_CW_OVERRIDE_REDIRECT,
+                XCB_CW_EVENT_MASK,
                 value_list);
 
     xcb_generic_error_t* errptr = xcb_request_check(m_connection, cookie);
@@ -297,6 +293,10 @@ m_useSizeHints(false)
             xcb_icccm_set_wm_normal_hints(m_connection, m_window, &sizeHints);
         }
     }
+    else
+    {
+        switchToFullscreen(mode);
+    }
 
     // Set the window's WM class (this can be used by window managers)
     char windowClass[512];
@@ -309,8 +309,14 @@ m_useSizeHints(false)
     // In fullscreen mode, we must grab keyboard and mouse inputs
     if (fullscreen)
     {
-        xcb_grab_pointer(m_connection, True, m_window, 0, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, m_window, XCB_NONE, XCB_CURRENT_TIME);
-        xcb_grab_keyboard(m_connection, True, m_window, XCB_CURRENT_TIME, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+        int grabResult = XGrabPointer(m_display, m_window, True, 0, GrabModeAsync, GrabModeAsync,
+                                      m_window, None, CurrentTime);
+        if (grabResult != GrabSuccess)
+            sf::err() << "Grabbing the mouse failed (" << grabResult << ")." << std::endl;
+
+        grabResult = XGrabKeyboard(m_display, m_window, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+        if (grabResult != GrabSuccess)
+            sf::err() << "Grabbing the keyboard failed (" << grabResult << ")." << std::endl;
     }
 }
 
@@ -667,59 +673,36 @@ bool WindowImplX11::hasFocus() const
 ////////////////////////////////////////////////////////////
 void WindowImplX11::switchToFullscreen(const VideoMode& mode)
 {
-    // Check if the XRandR extension is present
-    xcb_query_extension_reply_t* randr_ext =
-            xcb_query_extension_reply(m_connection, xcb_query_extension(m_connection, 5, "RANDR"), NULL);
-    if (randr_ext->present)
-    {
-        // Get the current configuration
-        xcb_generic_error_t* errors;
-        xcb_randr_get_screen_info_reply_t* config =
-                xcb_randr_get_screen_info_reply(m_connection,
-                                                xcb_randr_get_screen_info(m_connection, m_screen->root),
-                                                &errors);
-        if (! errors)
-        {
-            // Save the current video mode before we switch to fullscreen
-            m_oldVideoMode = config->sizeID;
+    static const std::string netWmState = "_NET_WM_STATE";
+    static const std::string netWmStateFullscreen = "_NET_WM_STATE_FULLSCREEN";
 
-            // Get the available screen sizes
-            xcb_randr_screen_size_t* sizes = xcb_randr_get_screen_info_sizes(config);
-            if (sizes && (config->nSizes > 0))
-            {
-                // Search a matching size
-                for (int i = 0; i < config->nSizes; ++i)
-                {
-                    if ((sizes[i].width == static_cast<int>(mode.width)) && (sizes[i].height == static_cast<int>(mode.height)))
-                    {
-                        // Switch to fullscreen mode
-                        xcb_randr_set_screen_config(m_connection,
-                                                    m_screen->root,
-                                                    config->timestamp,
-                                                    config->config_timestamp,
-                                                    i, config->rotation, config->rate);
+    xcb_intern_atom_cookie_t stateCookie = xcb_intern_atom(m_connection,
+                                                           0,
+                                                           netWmState.size(),
+                                                           netWmState.c_str());
+    xcb_intern_atom_reply_t* stateReply = xcb_intern_atom_reply(m_connection, stateCookie, 0);
 
-                        // Set "this" as the current fullscreen window
-                        fullscreenWindow = this;
-                        break;
-                    }
-                }
-            }
-        }
-        else
-        {
-            // Failed to get the screen configuration
-            err() << "Failed to get the current screen configuration for fullscreen mode, switching to window mode" << std::endl;
-        }
-        free(errors);
-        free(config);
-    }
-    else
+    xcb_intern_atom_cookie_t fullscreenCookie = xcb_intern_atom(m_connection,
+                                                                0,
+                                                                netWmStateFullscreen.size(),
+                                                                netWmStateFullscreen.c_str());
+    xcb_intern_atom_reply_t* fullscreenReply = xcb_intern_atom_reply(m_connection, fullscreenCookie, 0);
+
+    xcb_void_cookie_t changeCookie = xcb_change_property_checked(m_connection, XCB_PROP_MODE_REPLACE,
+                                                                 m_window,
+                                                                 stateReply->atom,
+                                                                 XCB_ATOM_ATOM, 32, 1,
+                                                                 &fullscreenReply->atom);
+
+    xcb_generic_error_t* error = xcb_request_check(m_connection, changeCookie);
+    if (error)
     {
-        // XRandr extension is not supported: we cannot use fullscreen mode
-        err() << "Fullscreen is not supported, switching to window mode" << std::endl;
+        sf::err() << "xcb_change_property failed, setting fullscreen not possible." << std::endl;
+        free(error);
     }
-    free(randr_ext);
+
+    free(stateReply);
+    free(fullscreenReply);
 }
 
 
